@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bom-pdf"
+dynamic = ["version"]
+description = "법률문서용 경량 PDF 리더/편집기"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf>=1.26",
+    "PySide6-Essentials>=6.8",
+    "pillow>=11",                    # 1-5 사진 → PDF (작업 프로세스 전용)
+    "pi-heif>=1.4",                  # HEIC 읽기 전용(아이폰 사진) — O7: pillow-heif 의 인코더(libx265 22MB) 없이
+    "opencv-python-headless>=4.10",  # 문서 사진 모드(테두리·원근 보정)
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "psutil", "pillow-heif"]  # pillow-heif: 시험용 HEIC 픽스처를 만드는 인코더
+
+[project.gui-scripts]
+bom-pdf = "bom_pdf.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bom_pdf.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
