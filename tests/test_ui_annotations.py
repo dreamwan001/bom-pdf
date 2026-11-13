@@ -322,7 +322,7 @@ def test_edit_existing_while_drawing_tool_is_on(qapp, window, tmp_path, korean_p
     assert view.selected_id is None and window.color_combo.currentData() == window.current_color
 
 
-def test_embedded_pdf_annotations_are_explained(qapp, window, tmp_path, korean_pdf):
+def test_embedded_pdf_annotations_are_explained(qapp, window, tmp_path, korean_pdf, monkeypatch):
     """원본 PDF 에 이미 든 주석(다른 프로그램·메모 포함 PDF)은 편집할 수 없다는 것을 목록 패널에 알린다."""
     src = tmp_path / "with_annots.pdf"
     doc = pymupdf.open(korean_pdf)
@@ -335,7 +335,37 @@ def test_embedded_pdf_annotations_are_explained(qapp, window, tmp_path, korean_p
     assert "2개" in window.annot_panel.status.text() and not window.annot_panel.status.isHidden()
     assert window.store_of(view).items == []
 
+    # 메모 글이 든 것은 목록에 [원본 메모]로 나오고(읽기만), 쪽 위 그 자리에서 찾을 수 있다
+    notes = view.doc.embedded_notes
+    assert [(n["page"], n["text"]) for n in notes] == [(1, "합성 메모")]
+    panel = window.annot_panel
+    assert panel.count_shown() == 1
+    node = panel.tree.topLevelItem(0).child(0)
+    assert node.text(0) == "[원본 메모] 합성 메모" and panel.selected_id() is None
+    panel.tree.setCurrentItem(node)
+    assert not panel.edit_btn.isEnabled() and not panel.delete_btn.isEnabled()
+    panel._on_clicked(node)
+    qapp.processEvents()
+    assert 1 in view.visible_pages()
+    r = notes[0]["rect"]
+    pos = view.page_point_to_view(1, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2).toPoint()
+    assert view.embedded_note_at(pos) is notes[0]
+    assert view.embedded_note_at(view.page_point_to_view(1, 400, 600).toPoint()) is None
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QHelpEvent
+    from PySide6.QtWidgets import QApplication, QToolTip
+
+    tip = QHelpEvent(QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos))  # 마우스를 올리면 메모 글
+    assert QApplication.sendEvent(view.viewport(), tip) and QToolTip.text() == "합성 메모"
+    got = []  # 두 번 누르면 전체 글 창(시험에서는 창 대신 기록)
+    monkeypatch.setattr("bom_pdf.ui.main_window.show_embedded_note", lambda _parent, note: got.append(note))
+    QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    assert got == [notes[0]]
+    panel._on_double(node)
+    assert got == [notes[0]] * 2
+
     plain = tmp_path / "plain.pdf"
     shutil.copy(korean_pdf, plain)
     view2 = _open_ready(qapp, window, plain)
     assert view2.doc.embedded_annots == 0 and window.annot_panel.status.isHidden()
+    assert view2.doc.embedded_notes == [] and window.annot_panel.count_shown() == 0

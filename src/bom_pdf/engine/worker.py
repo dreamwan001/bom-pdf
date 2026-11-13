@@ -20,7 +20,7 @@ PyMuPDF `get_pixmap`은 GIL을 놓지 않으므로 렌더·텍스트 추출은 �
 결과 (작업자 → UI)
     ("busy",   doc_id)                     작업 시작 직전 — 급사 시 원인 문서 판정용
     ("loading", doc_id, done, total)       (O4) 원격 파일을 메모리로 읽는 중(바이트)
-    ("opened", doc_id, status, reason, repaired, page_sizes, sha256, stat, embedded_annots)
+    ("opened", doc_id, status, reason, repaired, page_sizes, sha256, stat, embedded_annots, embedded_notes)
               sha256·stat((크기, mtime_ns)): 메모리로 읽어 연 경우에만, 아니면 None
     ("page",   doc_id, page, scale, seq, w, h, stride, lane, tile)  바로 뒤에 send_bytes(RGB 픽셀)
               tile: None(쪽 전체) | (tx, ty, x, y) — x, y 는 쪽 전체 그림 안에서 타일의 왼쪽 위 장치 px
@@ -252,7 +252,7 @@ def _worker_loop(cmd_conn, res_conn) -> None:
                     mem_sizes[doc_id] = stat[0]
             res_conn.send(("opened", doc_id, r.status, r.reason, r.repaired, r.page_sizes,
                            sha if r.doc is not None else None, stat if r.doc is not None else None,
-                           r.embedded_annots))
+                           r.embedded_annots, r.embedded_notes))
         elif op == "close":
             doc_id = msg[1]
             for key in [k for k in queues if k[0] == doc_id]:
@@ -411,6 +411,7 @@ class Opened:
     sha256: str | None = None  # (O4) 메모리로 읽어 연 경우 그 읽기에서 계산
     stat: tuple | None = None  # 그때의 (크기, mtime_ns)
     embedded_annots: int = 0  # 원본에 이미 든 주석 수(표시만)
+    embedded_notes: list | None = None  # 그중 메모 글이 든 것(읽기만)
     reopen: bool = False  # 작업자 재기동 뒤 다시 연 것
 
 

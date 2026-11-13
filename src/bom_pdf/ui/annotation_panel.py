@@ -3,6 +3,7 @@
 - 쪽별로 묶어 보여 주고(쪽 순서, 쪽 안에서는 위에서 아래), 종류·태그로 거른다.
 - 항목을 누르면 그 위치로 가고 주석을 고른다. 두 번 누르면 메모·태그 편집, Delete 는 삭제.
 - 메모·선택 원문은 화면에만 보이고 기록(log)하지 않는다.
+- 원본 PDF 에 원래 든 주석의 메모 글도 "[원본 메모]"로 함께 보인다(읽기만 — 누르면 그 자리로, 두 번 누르면 전체 글).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from bom_pdf.services import annotations as an
 
 ID_ROLE = Qt.ItemDataRole.UserRole
 PAGE_ROLE = Qt.ItemDataRole.UserRole + 1
+NOTE_ROLE = Qt.ItemDataRole.UserRole + 2  # 원본 PDF 메모(dict)
 SNIPPET = 60
 
 
@@ -36,17 +38,47 @@ def item_label(it: dict) -> str:
     return f"[{an.TYPE_LABELS[it['type']]}] {body}{tags}".rstrip()
 
 
+def embedded_label(note: dict) -> str:
+    body = " ".join(note["text"].split())
+    if len(body) > SNIPPET:
+        body = body[:SNIPPET - 1] + "…"
+    return f"[원본 메모] {body}"
+
+
+def show_embedded_note(parent, note: dict) -> None:
+    """원본 PDF 메모 전체 글(읽기만, 복사 가능)."""
+    dlg = QDialog(parent)
+    who = f" — {note['author']}" if note.get("author") else ""
+    dlg.setWindowTitle(f"원본 PDF 메모 ({note['page'] + 1}쪽){who}")
+    dlg.resize(460, 320)
+    lay = QVBoxLayout(dlg)
+    box = QPlainTextEdit(note["text"])
+    box.setReadOnly(True)
+    lay.addWidget(box)
+    hint = QLabel("PDF 파일 안에 원래 들어 있는 메모입니다. 여기서 고치거나 지울 수 없습니다.")
+    hint.setWordWrap(True)
+    lay.addWidget(hint)
+    bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    bb.rejected.connect(dlg.reject)
+    bb.accepted.connect(dlg.accept)
+    lay.addWidget(bb)
+    dlg.exec()
+
+
 class AnnotationPanel(QWidget):
     itemActivated = Signal(int, str)  # 쪽, 주석 id
     editRequested = Signal(str)
     deleteRequested = Signal(str)
     exportRequested = Signal()
+    embeddedActivated = Signal(object)  # 원본 PDF 메모(dict) — 그 자리로
+    embeddedOpenRequested = Signal(object)  # 전체 글 보기
 
     ALL = ""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.store: an.AnnotationStore | None = None
+        self.embedded: list = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         self.status = QLabel()
@@ -95,6 +127,11 @@ class AnnotationPanel(QWidget):
         self.status.setVisible(bool(status))
         self.refresh()
 
+    def set_embedded(self, notes: list) -> None:
+        if notes is not self.embedded:
+            self.embedded = notes
+            self.refresh()
+
     def refresh(self) -> None:
         keep = self.selected_id()
         tags = self.store.all_tags() if self.store else []
@@ -108,27 +145,32 @@ class AnnotationPanel(QWidget):
         self.tag_filter.blockSignals(False)
 
         self.tree.clear()
-        if self.store is None:
-            self._update_buttons()
-            return
         want_type, want_tag = self.type_filter.currentData(), self.tag_filter.currentData()
-        items = [it for it in self.store.items
+        items = [it for it in (self.store.items if self.store else [])
                  if (not want_type or it["type"] == want_type) and (not want_tag or want_tag in it["tags"])]
-        items.sort(key=lambda it: (it["page"], an.item_bounds(it)[1], an.item_bounds(it)[0]))
+        rows = [(it["page"], an.item_bounds(it)[1], an.item_bounds(it)[0], 0, it) for it in items]
+        if not want_type and not want_tag:  # 원본 PDF 메모는 거르지 않을 때만
+            rows += [(n["page"], n["rect"][1], n["rect"][0], 1, n) for n in self.embedded]
+        rows.sort(key=lambda r: r[:4])
         groups: dict[int, QTreeWidgetItem] = {}
-        for it in items:
-            g = groups.get(it["page"])
+        for page, _y, _x, embedded, it in rows:
+            g = groups.get(page)
             if g is None:
                 g = QTreeWidgetItem([""])
-                g.setData(0, PAGE_ROLE, it["page"])
+                g.setData(0, PAGE_ROLE, page)
                 g.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 self.tree.addTopLevelItem(g)
-                groups[it["page"]] = g
-            child = QTreeWidgetItem([item_label(it)])
-            child.setIcon(0, color_icon(it["color"]))
-            child.setData(0, ID_ROLE, it["id"])
-            child.setData(0, PAGE_ROLE, it["page"])
-            child.setToolTip(0, it["note"] or it["text"])
+                groups[page] = g
+            if embedded:
+                child = QTreeWidgetItem([embedded_label(it)])
+                child.setData(0, NOTE_ROLE, it)
+                child.setToolTip(0, it["text"])
+            else:
+                child = QTreeWidgetItem([item_label(it)])
+                child.setIcon(0, color_icon(it["color"]))
+                child.setData(0, ID_ROLE, it["id"])
+                child.setToolTip(0, it["note"] or it["text"])
+            child.setData(0, PAGE_ROLE, page)
             g.addChild(child)
         for page, g in groups.items():
             g.setText(0, f"{page + 1}쪽 ({g.childCount()})")
@@ -175,11 +217,15 @@ class AnnotationPanel(QWidget):
         item_id = node.data(0, ID_ROLE)
         if item_id:
             self.itemActivated.emit(node.data(0, PAGE_ROLE), item_id)
+        elif node.data(0, NOTE_ROLE):
+            self.embeddedActivated.emit(node.data(0, NOTE_ROLE))
 
     def _on_double(self, node: QTreeWidgetItem, _col: int = 0) -> None:
         item_id = node.data(0, ID_ROLE)
         if item_id:
             self.editRequested.emit(item_id)
+        elif node.data(0, NOTE_ROLE):
+            self.embeddedOpenRequested.emit(node.data(0, NOTE_ROLE))
 
     def _emit_selected(self, sig) -> None:
         item_id = self.selected_id()

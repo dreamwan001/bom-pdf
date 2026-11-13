@@ -22,9 +22,9 @@ import bisect
 import itertools
 import math
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPen
-from PySide6.QtWidgets import QAbstractScrollArea, QMenu
+from PySide6.QtWidgets import QAbstractScrollArea, QMenu, QToolTip
 
 from bom_pdf import sysinfo
 from bom_pdf.services import annotations as an
@@ -68,6 +68,7 @@ _lanes = itertools.count(1)
 class PageView(QAbstractScrollArea):
     pageChanged = Signal(int, int)  # 현재 쪽(0부터), 전체 쪽 수
     zoomChanged = Signal(float)
+    embeddedNoteRequested = Signal(object)  # 원본 PDF 메모(dict)를 두 번 누름 — 전체 글 보기
     activated = Signal()  # 포커스를 받음 — 분할 창에서 단축키·사이드바가 따라갈 보기
     createRequested = Signal(dict)  # 새 주석 자료(type·page·quads/rect·text) — 색·메모는 주 창이 채운다
     annotationClicked = Signal(str)  # 고른 주석 id ('' = 고른 것 없음)
@@ -914,6 +915,29 @@ class PageView(QAbstractScrollArea):
         self._update_text_selection()
         self._finish_text_drag()
 
+    def embedded_note_at(self, pos) -> dict | None:
+        """화면 위치 아래의 원본 PDF 메모(여럿이면 작은 것)."""
+        page = self.page_at(pos)
+        if page is None or not self.doc.embedded_notes:
+            return None
+        x, y = self.to_page_point(pos, page)
+        pad = 3.0
+        hits = [n for n in self.doc.embedded_notes if n["page"] == page
+                and n["rect"][0] - pad <= x <= n["rect"][2] + pad and n["rect"][1] - pad <= y <= n["rect"][3] + pad]
+        return min(hits, key=lambda n: (n["rect"][2] - n["rect"][0]) * (n["rect"][3] - n["rect"][1])) if hits else None
+
+    def viewportEvent(self, ev) -> bool:  # noqa: N802
+        if ev.type() == QEvent.Type.ToolTip:  # 원본 PDF 메모 위에 올리면 글을 보인다
+            note = self.embedded_note_at(ev.pos())
+            if note is not None:
+                text = note["text"] if len(note["text"]) <= 600 else note["text"][:600] + "… (두 번 누르면 전체)"
+                QToolTip.showText(ev.globalPos(), text, self.viewport())
+            else:
+                QToolTip.hideText()
+                ev.ignore()
+            return True
+        return super().viewportEvent(ev)
+
     def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
         pos = ev.position().toPoint()
         page = self.page_at(pos)
@@ -923,6 +947,11 @@ class PageView(QAbstractScrollArea):
                 self._drag = None
                 self.annotationClicked.emit(hit)
                 self.annotationEditRequested.emit(hit)
+                return
+            note = self.embedded_note_at(pos)
+            if note is not None:
+                self._drag = None
+                self.embeddedNoteRequested.emit(note)
                 return
         super().mouseDoubleClickEvent(ev)
 

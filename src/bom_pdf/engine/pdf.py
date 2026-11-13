@@ -46,6 +46,7 @@ class OpenResult:
     repaired: bool = False
     page_sizes: list[tuple[float, float]] | None = None  # 회전 반영한 (폭, 높이) pt
     embedded_annots: int = 0  # 원본에 이미 든 주석 수(링크·양식 칸·팝업 제외) — 표시만 되고 편집 안 됨
+    embedded_notes: list | None = None  # 그중 메모 글이 든 것 [{"page","kind","rect","text","author"}] — 읽기만
 
 
 def open_pdf(path: str, password: str | None = None, data: bytes | None = None) -> OpenResult:
@@ -78,26 +79,52 @@ def open_pdf(path: str, password: str | None = None, data: bytes | None = None) 
         n = doc.page_count
         sizes = []
         embedded = 0
+        notes: list[dict] = []
         for i in range(n):
             page = doc[i]
             r = page.rect
             sizes.append((r.width, r.height))
-            embedded += _count_page_annots(page)
+            embedded += _count_page_annots(page, notes)
     except Exception:
         doc.close()
         return OpenResult(CANNOT_OPEN, reason=REASON_DAMAGED)
     if n == 0:
         doc.close()
         return OpenResult(CANNOT_OPEN, reason=REASON_NO_PAGES)
-    return OpenResult(OK, doc=doc, repaired=bool(doc.is_repaired), page_sizes=sizes, embedded_annots=embedded)
+    return OpenResult(OK, doc=doc, repaired=bool(doc.is_repaired), page_sizes=sizes, embedded_annots=embedded,
+                      embedded_notes=notes)
 
 
-def _count_page_annots(page: pymupdf.Page) -> int:
-    """그 쪽에 원래 든 주석 수 — 팝업(메모 창)은 짝인 주석과 하나로 센다. 읽다 틀리면 0(열기를 막지 않음)."""
+MAX_EMBEDDED_NOTES = 2000  # 메모 글을 UI 로 넘기는 상한(수·글자) — 넘는 것은 화면 그림으로만 보인다
+MAX_EMBEDDED_NOTE_CHARS = 20000
+
+
+def _count_page_annots(page: pymupdf.Page, notes: list | None = None) -> int:
+    """그 쪽에 원래 든 주석 수 — 팝업(메모 창)은 짝인 주석과 하나로 센다. 읽다 틀리면 0(열기를 막지 않음).
+
+    notes 를 주면 메모 글(/Contents)이 든 주석을 거기에 모은다(사각형은 회전 반영 쪽 좌표 pt).
+    """
     try:
         if page.first_annot is None:
             return 0
-        return sum(1 for a in page.annots() if a.type[0] != pymupdf.PDF_ANNOT_POPUP)
+        count = 0
+        rot = page.rotation_matrix
+        for a in page.annots():
+            if a.type[0] == pymupdf.PDF_ANNOT_POPUP:
+                continue
+            count += 1
+            if notes is None or len(notes) >= MAX_EMBEDDED_NOTES:
+                continue
+            try:
+                info = a.info
+                text = (info.get("content") or "").strip()
+                if text:
+                    r = (a.rect * rot).normalize()
+                    notes.append({"page": page.number, "kind": a.type[1], "rect": (r.x0, r.y0, r.x1, r.y1),
+                                  "text": text[:MAX_EMBEDDED_NOTE_CHARS], "author": (info.get("title") or "").strip()})
+            except Exception:
+                pass
+        return count
     except Exception:
         return 0
 

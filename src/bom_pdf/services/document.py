@@ -59,6 +59,7 @@ class Document:
     sha256: str | None = None
     password: str | None = field(default=None, repr=False)
     embedded_annots: int = 0  # 원본 PDF 에 이미 든 주석 수 — 엔진이 그리기만 하고 bom-pdf 로는 편집하지 않는다
+    embedded_notes: list = field(default_factory=list, repr=False)  # 그중 메모 글이 든 것(읽기만, 기록 금지)
 
     @property
     def page_count(self) -> int:
@@ -321,7 +322,7 @@ class DocumentService:
         path, password = pending
         if ev.status == "ok":
             doc = Document(ev.doc_id, path, [tuple(s) for s in ev.page_sizes], ev.repaired, password=password,
-                           embedded_annots=ev.embedded_annots)
+                           embedded_annots=ev.embedded_annots, embedded_notes=list(ev.embedded_notes or []))
             if ev.sha256 and ev.stat:  # 작업자가 메모리로 읽으며 함께 계산(원격 파일)
                 doc.sha256 = ev.sha256
                 self.hash_cache.put(storage.stat_key(path, *ev.stat), ev.sha256)

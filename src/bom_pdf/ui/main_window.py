@@ -39,7 +39,7 @@ from bom_pdf.services import outputs
 from bom_pdf.services import pageops as po
 from bom_pdf.services import session as ss
 from bom_pdf.services.recent import RecentDocuments
-from bom_pdf.ui.annotation_panel import AnnotationDialog, AnnotationPanel, color_icon
+from bom_pdf.ui.annotation_panel import AnnotationDialog, AnnotationPanel, color_icon, show_embedded_note
 from bom_pdf.ui.bridge import RenderedPage, ServiceBridge
 from bom_pdf.ui.compress_dialog import CompressDialog, human_size
 from bom_pdf.ui.image_pdf_dialog import ImagePdfDialog
@@ -60,9 +60,9 @@ BANNER_INFO = "background:#fff4ce; color:#3b2f00; padding:6px 10px; border-botto
 BANNER_ERROR = "background:#fde7e9; color:#5c0b12; padding:6px 10px; border-bottom:1px solid #e8a0a8;"
 SPLIT_HEADER = "background:#e4e6e9; border-left:1px solid #c8cbd0;"
 MSG_HASHING = "문서 식별값(sha256)을 계산하는 중입니다. 끝나면 주석을 보고 쓸 수 있습니다."
-MSG_EMBEDDED = ("이 PDF 파일 안에 원래 들어 있는 주석 {n}개는 화면에 보이기만 하고 여기서 고치거나 지울 수 없습니다"
-                "(목록에도 나오지 않음). 메모 포함 PDF 로 내보낸 파일을 다시 연 경우도 같습니다 — "
-                "고치려면 처음 원본 PDF 를 여세요.")
+MSG_EMBEDDED = ("이 PDF 파일 안에 원래 들어 있는 주석 {n}개는 보기만 되고 여기서 고치거나 지울 수 없습니다. "
+                "메모 글이 있으면 아래에 [원본 메모]로 나오고, 쪽 위 그 자리에 마우스를 올리거나 두 번 누르면 볼 수 있습니다. "
+                "메모 포함 PDF 로 내보낸 파일을 다시 연 경우도 같습니다 — 고치려면 처음 원본 PDF 를 여세요.")
 SLOW_OPEN_S = 1.0  # (O4) 이보다 오래 여는 중이면 "불러오는 중"과 취소 단추를 보인다
 MSG_SLOW_OPEN = "네트워크 드라이브·Dropbox 등의 \"온라인 전용\" 파일은 처음 열 때 내려받느라 오래 걸릴 수 있습니다."
 EXPORT_MESSAGES = {
@@ -275,6 +275,8 @@ class MainWindow(QMainWindow):
         self.annot_panel.editRequested.connect(self.edit_annotation)
         self.annot_panel.deleteRequested.connect(self.delete_annotation)
         self.annot_panel.exportRequested.connect(self.export_annotated)
+        self.annot_panel.embeddedActivated.connect(self._go_to_embedded_note)
+        self.annot_panel.embeddedOpenRequested.connect(lambda note: show_embedded_note(self, note))
         self.annot_dock = QDockWidget("주석", self)
         self.annot_dock.setObjectName("annotations")
         self.annot_dock.setWidget(self.annot_panel)
@@ -582,6 +584,7 @@ class MainWindow(QMainWindow):
         view.createRequested.connect(lambda data, v=view: self._on_create_requested(v, data))
         view.annotationClicked.connect(lambda item_id, v=view: self._on_annotation_clicked(v, item_id))
         view.annotationEditRequested.connect(self.edit_annotation)
+        view.embeddedNoteRequested.connect(lambda note: show_embedded_note(self, note))
         view.annotationDeleteRequested.connect(self.delete_annotation)
         view.text_layer = self.text_layer
         view.set_tool(self.current_tool)
@@ -815,7 +818,8 @@ class MainWindow(QMainWindow):
             tab.show_banner(ev.notice)
         if ev.doc.embedded_annots:
             log.info("doc=%s has embedded annots=%d (display only)", ev.doc.doc_id, ev.doc.embedded_annots)
-            self.statusBar().showMessage(f"이 PDF 에 원래 든 주석 {ev.doc.embedded_annots}개는 보기만 됩니다", 8000)
+            memo = f" — 메모 {len(ev.doc.embedded_notes)}개는 그 자리에 마우스를 올리면 보입니다" if ev.doc.embedded_notes else ""
+            self.statusBar().showMessage(f"이 PDF 에 원래 든 주석 {ev.doc.embedded_annots}개는 보기만 됩니다{memo}", 8000)
         try:
             self.recent.add(ev.doc.path)
         except OSError:
@@ -992,6 +996,7 @@ class MainWindow(QMainWindow):
                 status = "\n\n".join(s for s in (status, MSG_EMBEDDED.format(n=view.doc.embedded_annots)) if s)
         if self.annot_panel.store is not store or self.annot_panel.status.text() != status:
             self.annot_panel.set_store(store, status)
+        self.annot_panel.set_embedded(view.doc.embedded_notes if view is not None else [])
         self.annot_panel.select_item(view.selected_id if view is not None else None)
 
     def _selected_id(self) -> str | None:
@@ -1064,6 +1069,11 @@ class MainWindow(QMainWindow):
         store = self.store_of(view)
         if store is not None:
             self._select_annotation(store, item_id or None)
+
+    def _go_to_embedded_note(self, note: dict) -> None:
+        view = self.current_view()
+        if view is not None:
+            view.reveal(note["page"], note["rect"])
 
     def _go_to_annotation(self, page: int, item_id: str) -> None:
         view = self.current_view()
