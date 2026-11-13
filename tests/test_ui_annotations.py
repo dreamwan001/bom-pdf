@@ -356,7 +356,14 @@ def test_embedded_pdf_annotations_are_explained(qapp, window, tmp_path, korean_p
     from PySide6.QtWidgets import QApplication, QToolTip
 
     tip = QHelpEvent(QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos))  # 마우스를 올리면 메모 글
-    assert QApplication.sendEvent(view.viewport(), tip) and QToolTip.text() == "합성 메모"
+    assert QApplication.sendEvent(view.viewport(), tip) and "합성 메모" in QToolTip.text()
+    QToolTip.hideText()  # 누르지 않고 지나가기만 해도 바로 뜨고, 벗어나면 닫힌다
+    away = view.page_point_to_view(1, 400, 600).toPoint()
+    QTest.mouseMove(view.viewport(), away)
+    QTest.mouseMove(view.viewport(), pos)
+    assert view._hover_note is notes[0] and "합성 메모" in QToolTip.text() and "width='420'" in QToolTip.text()
+    QTest.mouseMove(view.viewport(), away)
+    assert view._hover_note is None
     got = []  # 두 번 누르면 전체 글 창(시험에서는 창 대신 기록)
     monkeypatch.setattr("bom_pdf.ui.main_window.show_embedded_note", lambda _parent, note: got.append(note))
     QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=pos)

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import bisect
+import html
 import itertools
 import math
 
@@ -56,6 +57,20 @@ SEL_ANNOT_PEN = QColor(20, 90, 220)
 
 TOOL_SELECT, TOOL_HIGHLIGHT, TOOL_UNDERLINE, TOOL_NOTE, TOOL_BOX = "select", an.HIGHLIGHT, an.UNDERLINE, an.NOTE, an.BOX
 DRAG_MIN_PX = 3  # 이보다 적게 움직이면 클릭으로 본다
+
+
+TIP_MAX_CHARS = 600  # 풍선말에 보일 메모 글 — 넘으면 줄이고 두 번 눌러 전체
+TIP_WIDTH = 420  # 풍선말 폭(논리 px) — 긴 줄이 화면 밖으로 나가지 않게 접는다
+NOTE_MARK = 11  # 메모가 딸린 원본 주석 귀퉁이 표시 크기(논리 px)
+
+
+def note_tip_html(text: str) -> str:
+    """원본 PDF 메모 풍선말 — 정해진 폭으로 줄을 접고 줄바꿈은 그대로."""
+    more = len(text) > TIP_MAX_CHARS
+    body = html.escape(text[:TIP_MAX_CHARS] + ("…" if more else ""))
+    tail = "<br><span style='color:#666'>(두 번 누르면 전체 글)</span>" if more else ""
+    return (f"<table width='{TIP_WIDTH}' cellpadding='0' cellspacing='0'><tr>"
+            f"<td style='white-space:pre-wrap'>{body}{tail}</td></tr></table>")
 
 
 def _qcolor(name: str, alpha: int = 255) -> QColor:
@@ -99,9 +114,15 @@ class PageView(QAbstractScrollArea):
         self.selected_id: str | None = None
         self._drag: dict | None = None  # {"kind": "text"|"box", "page", "a": (x, y) pt, "b", "moved", "hit", "press"}
         self._sel: tuple[int, list, str] | None = None  # (쪽, 줄별 사각형 pt, 글자)
+        self._notes_by_page: dict[int, list] = {}  # 원본 PDF 메모(읽기만)
+        for n in doc.embedded_notes:
+            self._notes_by_page.setdefault(n["page"], []).append(n)
+        self._hover_note: dict | None = None
         self.setFrameShape(QAbstractScrollArea.Shape.NoFrame)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.viewport().setAutoFillBackground(False)
+        if self._notes_by_page:  # 메모 위에 올리자마자 풍선말을 보이려면 누르지 않은 이동도 받아야 한다
+            self.viewport().setMouseTracking(True)
         self.verticalScrollBar().setSingleStep(48)
         self.horizontalScrollBar().setSingleStep(48)
         self._relayout(keep_anchor=False)
@@ -670,8 +691,29 @@ class PageView(QAbstractScrollArea):
 
     def _paint_overlays(self, qp: QPainter, page: int, target: QRectF) -> None:
         self._paint_annots(qp, page, target)
+        self._paint_note_marks(qp, page, target)
         self._paint_hits(qp, page, target)
         self._paint_selection(qp, page, target)
+
+    def _paint_note_marks(self, qp: QPainter, page: int, target: QRectF) -> None:
+        """메모 글이 딸린 원본 주석의 오른쪽 위 귀퉁이에 작은 쪽지 표시."""
+        notes = self._notes_by_page.get(page)
+        if not notes:
+            return
+        k = target.width() / self.doc.page_sizes[page][0]
+        m = NOTE_MARK
+        qp.save()
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for n in notes:
+            x = min(target.x() + n["rect"][2] * k - m / 2, target.right() - m)
+            y = max(target.y() + n["rect"][1] * k - m / 2, target.y())
+            box = QRectF(x, y, m, m)
+            qp.setPen(QPen(QColor("#8a5a00"), 1))
+            qp.setBrush(QBrush(QColor("#ffc233")))
+            qp.drawRoundedRect(box, 2, 2)
+            for i in (0.36, 0.64):
+                qp.drawLine(QPointF(x + 2.5, y + m * i), QPointF(x + m - 2.5, y + m * i))
+        qp.restore()
 
     def _paint_annots(self, qp: QPainter, page: int, target: QRectF) -> None:
         if self.store is None:
@@ -873,6 +915,8 @@ class PageView(QAbstractScrollArea):
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802
         d = self._drag
         if d is None or d.get("released") or not (ev.buttons() & Qt.MouseButton.LeftButton):
+            if self._notes_by_page and not ev.buttons():
+                self._hover(ev.position().toPoint(), ev.globalPosition().toPoint())
             super().mouseMoveEvent(ev)
             return
         pos = ev.position().toPoint()
@@ -926,16 +970,29 @@ class PageView(QAbstractScrollArea):
                 and n["rect"][0] - pad <= x <= n["rect"][2] + pad and n["rect"][1] - pad <= y <= n["rect"][3] + pad]
         return min(hits, key=lambda n: (n["rect"][2] - n["rect"][0]) * (n["rect"][3] - n["rect"][1])) if hits else None
 
+    def _hover(self, pos, global_pos) -> None:
+        """원본 PDF 메모 위로 들어오면 바로 풍선말, 벗어나면 닫는다(기다리지 않음)."""
+        note = self.embedded_note_at(pos)
+        if note is self._hover_note:
+            return
+        self._hover_note = note
+        if note is not None:
+            QToolTip.showText(global_pos, note_tip_html(note["text"]), self.viewport())
+        else:
+            QToolTip.hideText()
+
     def viewportEvent(self, ev) -> bool:  # noqa: N802
-        if ev.type() == QEvent.Type.ToolTip:  # 원본 PDF 메모 위에 올리면 글을 보인다
+        if ev.type() == QEvent.Type.ToolTip:  # 메모 위에 가만히 두었을 때(풍선말이 닫힌 뒤 다시)
             note = self.embedded_note_at(ev.pos())
             if note is not None:
-                text = note["text"] if len(note["text"]) <= 600 else note["text"][:600] + "… (두 번 누르면 전체)"
-                QToolTip.showText(ev.globalPos(), text, self.viewport())
+                self._hover_note = note
+                QToolTip.showText(ev.globalPos(), note_tip_html(note["text"]), self.viewport())
             else:
                 QToolTip.hideText()
                 ev.ignore()
             return True
+        if ev.type() == QEvent.Type.Leave:
+            self._hover_note = None
         return super().viewportEvent(ev)
 
     def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
