@@ -189,3 +189,53 @@ def test_fit_modes_show_one_page_without_side_bands(qapp, window, long_pdf):
     v.set_zoom(0.5)  # 배율을 직접 정하면 전처럼 여백
     qapp.processEvents()
     assert v._rects[4][0] >= 12 and v._tops[0] == 10 and v._tops[5] - (v._tops[4] + v._rects[4][3]) == 10
+
+
+def test_mixed_page_sizes_fit_and_zoom_keep_page_centered(qapp, window, tmp_path):
+    """A4 사이에 훨씬 큰 쪽이 섞인 문서: 폭 맞춤은 보는 쪽 기준, 확대해도 보던 쪽이 옆으로 밀리지 않는다."""
+    import pymupdf
+
+    path = tmp_path / "mixed.pdf"
+    doc = pymupdf.open()
+    for i in range(6):
+        big = i == 3
+        doc.new_page(width=1800 if big else 595, height=2250 if big else 842)
+    doc.save(path)
+    doc.close()
+    window.open_paths([str(path)])
+    qt_wait(qapp, lambda: window.current_view() is not None)
+    v = window.current_view()
+    qapp.processEvents()
+    vp, hs = v.viewport(), v.horizontalScrollBar()
+
+    def screen_center(page):  # 화면에서 그 쪽의 가로 가운데
+        x, y, w, h = v._rects[page]
+        return x + w / 2 - hs.value()
+
+    assert v.fit_mode == "width"
+    assert abs(v._rects[0][2] - vp.width()) <= 1  # 큰 쪽이 아니라 보는 쪽(A4)이 화면 폭을 채움
+    assert abs(screen_center(0) - vp.width() / 2) <= 2
+
+    for _ in range(4):  # 확대해도 보던 쪽이 가운데
+        v.zoom_in()
+        qapp.processEvents()
+        assert abs(screen_center(0) - vp.width() / 2) <= 2
+    for _ in range(8):
+        v.zoom_out()
+        qapp.processEvents()
+        assert abs(screen_center(0) - vp.width() / 2) <= 2
+
+    v.set_zoom(2.0)  # 쪽 오른쪽을 보다가 확대하면 화면 가운데에 있던 곳이 그대로 가운데
+    x, y, w, h = v._rects[0]
+    hs.setValue(x + w - vp.width())
+    qapp.processEvents()
+    before = (hs.value() + vp.width() / 2 - x) / w
+    v.zoom_in()
+    qapp.processEvents()
+    x, y, w, h = v._rects[0]
+    assert abs((hs.value() + vp.width() / 2 - x) / w - before) < 0.005
+
+    v.set_fit("width")
+    window.resize(1000, 700)  # 창 크기가 바뀌어도 그대로 폭에 맞음
+    qapp.processEvents()
+    assert abs(v._rects[0][2] - vp.width()) <= 1 and abs(screen_center(0) - vp.width() / 2) <= 1

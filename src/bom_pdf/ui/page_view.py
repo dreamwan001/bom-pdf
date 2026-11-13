@@ -82,6 +82,7 @@ class PageView(QAbstractScrollArea):
         self._tops: list[int] = []
         self._rects: list[tuple[int, int, int, int]] = []  # x, y, w, h (논리 px, 내용 좌표)
         self._content_w = self._content_h = 0
+        self._layout_vw = 0
         self._ack = 0
         self._last_request = None
         self._errors: set[int] = set()
@@ -140,15 +141,15 @@ class PageView(QAbstractScrollArea):
         vh = max(50, self.viewport().height() - 2 * self._top())
         cur = max(0, self._current)
         pw, ph = self.doc.page_sizes[cur]
-        if self._fit == FIT_WIDTH:
-            widest = max(w for w, _ in self.doc.page_sizes)
-            z = vw / (widest * LOGICAL_DPI / 72.0)
+        if self._fit == FIT_WIDTH:  # 보는 쪽 기준 — 가장 넓은 쪽 기준이면 큰 쪽 하나가 섞인 문서에서 나머지가 작아진다
+            z = vw / (pw * LOGICAL_DPI / 72.0)
         else:
             z = min(vw / (pw * LOGICAL_DPI / 72.0), vh / (ph * LOGICAL_DPI / 72.0))
         return max(ZOOM_MIN, min(ZOOM_MAX, z))
 
     def _relayout(self, keep_anchor: bool = True) -> None:
         anchor = self._anchor() if keep_anchor and self._tops else None
+        fx = self._anchor_x(anchor[0]) if anchor is not None and self._fit == FIT_NONE else 0.5  # 맞춤은 늘 가운데
         fz = self._fit_zoom()
         if fz is not None:
             self._zoom = fz
@@ -156,7 +157,7 @@ class PageView(QAbstractScrollArea):
         widths = [max(1, round(w * k)) for w, _ in self.doc.page_sizes]
         side = self._side()
         self._content_w = (max(widths) if widths else 0) + 2 * side
-        vw = self.viewport().width()
+        vw = self._layout_vw = self.viewport().width()
         top, gap = self._top(), self._gap()
         y = top
         self._tops, self._rects = [], []
@@ -176,6 +177,9 @@ class PageView(QAbstractScrollArea):
             page, frac = anchor
             x, y0, w, h = self._rects[page]
             vs.setValue(int(y0 + frac * h - self.viewport().height() / 2))
+            hs.setValue(round(x + fx * w - vw / 2))  # 쪽 크기가 섞인 문서: 보던 쪽이 옆으로 밀리지 않게
+        else:
+            hs.setValue((self._content_w - vw) // 2)  # 쪽은 모두 내용 폭 가운데에 있다
         self.viewport().update()
         self.zoomChanged.emit(self._zoom)
 
@@ -185,6 +189,12 @@ class PageView(QAbstractScrollArea):
         i = max(0, bisect.bisect_right(self._tops, cy) - 1)
         x, y, w, h = self._rects[i]
         return i, min(1.0, max(0.0, (cy - y) / h))
+
+    def _anchor_x(self, page: int) -> float:
+        """화면 가로 가운데가 그 쪽 폭의 어디인지(0~1) — 마지막으로 배치한 화면 폭 기준."""
+        x, y, w, h = self._rects[page]
+        cx = self.horizontalScrollBar().value() + self._layout_vw / 2
+        return min(1.0, max(0.0, (cx - x) / w))
 
     def set_zoom(self, z: float) -> None:
         self._fit = FIT_NONE
