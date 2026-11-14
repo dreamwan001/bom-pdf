@@ -23,8 +23,8 @@ import html
 import itertools
 import math
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPen
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QCursor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import QAbstractScrollArea, QMenu, QToolTip
 
 from bom_pdf import sysinfo
@@ -62,6 +62,7 @@ DRAG_MIN_PX = 3  # 이보다 적게 움직이면 클릭으로 본다
 TIP_MAX_CHARS = 600  # 풍선말에 보일 메모 글 — 넘으면 줄이고 두 번 눌러 전체
 TIP_WIDTH = 420  # 풍선말 폭(논리 px) — 긴 줄이 화면 밖으로 나가지 않게 접는다
 NOTE_MARK = 11  # 메모가 딸린 원본 주석 귀퉁이 표시 크기(논리 px)
+HOVER_SETTLE_MS = 120  # 스크롤이 멎고 이만큼 뒤 커서 아래 메모를 다시 본다(넘기는 동안 깜빡이지 않게)
 
 
 def note_tip_html(text: str) -> str:
@@ -118,6 +119,10 @@ class PageView(QAbstractScrollArea):
         for n in doc.embedded_notes:
             self._notes_by_page.setdefault(n["page"], []).append(n)
         self._hover_note: dict | None = None
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(HOVER_SETTLE_MS)
+        self._hover_timer.timeout.connect(self._hover_at_cursor)
         self.setFrameShape(QAbstractScrollArea.Shape.NoFrame)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.viewport().setAutoFillBackground(False)
@@ -598,6 +603,9 @@ class PageView(QAbstractScrollArea):
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802
         self.viewport().update()
+        if self._notes_by_page:  # 마우스는 그대로인데 쪽이 움직였다 — 멎으면 커서 아래를 다시 본다
+            self._hover_note = None
+            self._hover_timer.start()
 
     def hideEvent(self, ev) -> None:  # noqa: N802
         """다른 탭으로 넘어가면 이 보기의 고정을 푼다 — 숨은 탭이 캐시를 붙잡지 않게."""
@@ -973,13 +981,22 @@ class PageView(QAbstractScrollArea):
     def _hover(self, pos, global_pos) -> None:
         """원본 PDF 메모 위로 들어오면 바로 풍선말, 벗어나면 닫는다(기다리지 않음)."""
         note = self.embedded_note_at(pos)
-        if note is self._hover_note:
+        if note is None:
+            if self._hover_note is not None:
+                self._hover_note = None
+                QToolTip.hideText()
             return
-        self._hover_note = note
-        if note is not None:
-            QToolTip.showText(global_pos, note_tip_html(note["text"]), self.viewport())
-        else:
-            QToolTip.hideText()
+        tip = note_tip_html(note["text"])
+        # 같은 메모 위라도 풍선말이 닫혀 있으면(휠·누름·시간 지남) 다시 보인다
+        if note is not self._hover_note or not QToolTip.isVisible() or QToolTip.text() != tip:
+            self._hover_note = note
+            QToolTip.showText(global_pos, tip, self.viewport())
+
+    def _hover_at_cursor(self) -> None:
+        if not self.viewport().underMouse() or QGuiApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            return
+        g = QCursor.pos()
+        self._hover(self.viewport().mapFromGlobal(g), g)
 
     def viewportEvent(self, ev) -> bool:  # noqa: N802
         if ev.type() == QEvent.Type.ToolTip:  # 메모 위에 가만히 두었을 때(풍선말이 닫힌 뒤 다시)

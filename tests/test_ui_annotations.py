@@ -362,6 +362,9 @@ def test_embedded_pdf_annotations_are_explained(qapp, window, tmp_path, korean_p
     QTest.mouseMove(view.viewport(), away)
     QTest.mouseMove(view.viewport(), pos)
     assert view._hover_note is notes[0] and "합성 메모" in QToolTip.text() and "width='420'" in QToolTip.text()
+    QToolTip.hideText()  # 풍선말이 닫힌 뒤(휠·누름) 같은 메모 위에서 조금만 움직여도 다시 뜬다
+    QTest.mouseMove(view.viewport(), pos + QPoint(1, 0))
+    assert "합성 메모" in QToolTip.text()
     QTest.mouseMove(view.viewport(), away)
     assert view._hover_note is None
     got = []  # 두 번 누르면 전체 글 창(시험에서는 창 대신 기록)
